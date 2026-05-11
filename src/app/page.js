@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { jsPDF } from "jspdf";
+import { autoTable } from "jspdf-autotable";
 
 const categoriasBaseUI = [
   {
@@ -69,6 +71,8 @@ export default function Home() {
   const [xmlReporte, setXmlReporte] = useState("");
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
+  const categoriaFormRef = useRef(null);
+  const subcategoriaFormRef = useRef(null);
 
   const [mensaje, setMensaje] = useState({
     tipo: "",
@@ -412,13 +416,25 @@ export default function Home() {
     }
   }
 
+  function moverASeccion(ref) {
+    requestAnimationFrame(() => {
+      ref.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+
   function cargarCategoriaParaEditar(categoria) {
+    setCategoriaTipo("personalizada");
+
     setCategoriaForm({
       id: categoria._id,
       nombre: categoria.nombre,
       descripcion: categoria.descripcion || "",
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    moverASeccion(categoriaFormRef);
   }
 
   function cargarSubcategoriaParaEditar(categoria, subcategoria) {
@@ -428,8 +444,158 @@ export default function Home() {
       nombre: subcategoria.nombre,
       valorGastado: subcategoria.valorGastado,
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    moverASeccion(subcategoriaFormRef);
   }
+
+  function descargarPDF() {
+    if (!presupuesto) {
+      mostrarMensaje("error", "Primero debes abrir o crear un presupuesto");
+      return;
+    }
+
+    const doc = new jsPDF();
+
+    const fechaGeneracion = new Date().toLocaleDateString("es-CO", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+
+    const nombreArchivo = `reporte-${presupuesto.nombre || "presupuesto"}`
+      .toLowerCase()
+      .replaceAll(" ", "-")
+      .replace(/[^\w-]/g, "");
+
+    // Encabezado
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.text("Reporte de Presupuesto Personal", 14, 18);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.text(`Fecha de generación: ${fechaGeneracion}`, 14, 26);
+    doc.text(`Presupuesto: ${presupuesto.nombre}`, 14, 32);
+
+    // Resumen general
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Resumen general", 14, 45);
+
+    const saldoActual =
+      Number(presupuesto.presupuestoTotal || 0) -
+      Number(presupuesto.totalGastado || 0);
+
+    autoTable(doc, {
+      startY: 50,
+      head: [["Concepto", "Valor"]],
+      body: [
+        ["Presupuesto total", formatearMoneda(presupuesto.presupuestoTotal)],
+        ["Total gastado", formatearMoneda(presupuesto.totalGastado)],
+        ["Saldo disponible", formatearMoneda(saldoActual)],
+        ["Porcentaje gastado", formatearPorcentaje(presupuesto.porcentajeGastado)],
+      ],
+      theme: "grid",
+      headStyles: {
+        fillColor: [20, 184, 166],
+        textColor: [255, 255, 255],
+      },
+      styles: {
+        fontSize: 10,
+        cellPadding: 3,
+      },
+    });
+
+    // Detalle de gastos
+    const filasDetalle = [];
+
+    categorias.forEach((categoria) => {
+      filasDetalle.push([
+        "Categoría",
+        categoria.nombre,
+        formatearMoneda(categoria.valorGastado),
+        formatearPorcentaje(categoria.porcentajeDelTotal),
+      ]);
+
+      if (categoria.subcategorias && categoria.subcategorias.length > 0) {
+        categoria.subcategorias.forEach((subcategoria) => {
+          filasDetalle.push([
+            "Subcategoría",
+            `  - ${subcategoria.nombre}`,
+            formatearMoneda(subcategoria.valorGastado),
+            formatearPorcentaje(subcategoria.porcentajeDelTotal),
+          ]);
+        });
+      }
+    });
+
+    const inicioDetalle = doc.lastAutoTable?.finalY
+      ? doc.lastAutoTable.finalY + 12
+      : 90;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Detalle por categorías y subcategorías", 14, inicioDetalle);
+
+    autoTable(doc, {
+      startY: inicioDetalle + 5,
+      head: [["Tipo", "Nombre", "Valor gastado", "% del total"]],
+      body:
+        filasDetalle.length > 0
+          ? filasDetalle
+          : [["Sin datos", "No hay categorías registradas", "$0", "0%"]],
+      theme: "striped",
+      headStyles: {
+        fillColor: [124, 58, 237],
+        textColor: [255, 255, 255],
+      },
+      styles: {
+        fontSize: 9,
+        cellPadding: 3,
+      },
+      columnStyles: {
+        0: { cellWidth: 32 },
+        1: { cellWidth: 78 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 30 },
+      },
+      didParseCell: function (data) {
+        if (data.section === "body" && data.row.raw[0] === "Categoría") {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fillColor = [241, 245, 249];
+        }
+      },
+    });
+
+    // Nota final
+    const finalY = doc.lastAutoTable?.finalY || 260;
+
+    if (finalY < 270) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text(
+        "Reporte generado automáticamente desde la aplicación de presupuesto personal.",
+        14,
+        finalY + 10
+      );
+    }
+
+    // Numeración de páginas
+    const totalPaginas = doc.internal.getNumberOfPages();
+
+    for (let i = 1; i <= totalPaginas; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.text(
+        `Página ${i} de ${totalPaginas}`,
+        170,
+        290
+      );
+    }
+
+    doc.save(`${nombreArchivo || "reporte-presupuesto"}.pdf`);
+  }
+
 
   if (cargando) {
     return (
@@ -696,7 +862,10 @@ export default function Home() {
 
             <section className="mt-8 grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
               <div className="space-y-6">
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl">
+                <div
+                  ref={categoriaFormRef}
+                  className="scroll-mt-8 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl"
+                >
                   <h2 className="text-xl font-bold text-violet-200">
                     Administrar categorías
                   </h2>
@@ -820,7 +989,10 @@ export default function Home() {
                   </form>
                 </div>
 
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl">
+                <div
+                  ref={subcategoriaFormRef}
+                  className="scroll-mt-8 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl"
+                >
                   <h2 className="text-xl font-bold text-cyan-200">
                     Administrar subcategorías
                   </h2>
@@ -919,20 +1091,27 @@ export default function Home() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h2 className="text-xl font-bold text-emerald-200">
-                        Reporte XML
+                        Reportes del presupuesto
                       </h2>
                       <p className="mt-1 text-sm text-white/65">
-                        Visualización del árbol XML generado desde los datos del presupuesto.
+                        Genera el árbol XML o descarga un reporte PDF con el resumen actual del presupuesto.
                       </p>
                     </div>
                   </div>
 
-                  <div className="mt-4">
+                  <div className="mt-4 flex flex-wrap gap-3">
                     <button
                       onClick={cargarXML}
                       className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-3 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/20"
                     >
                       Generar XML
+                    </button>
+
+                    <button
+                      onClick={descargarPDF}
+                      className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-400/20"
+                    >
+                      Descargar PDF
                     </button>
                   </div>
 
