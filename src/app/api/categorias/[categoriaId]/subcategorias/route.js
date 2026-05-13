@@ -95,13 +95,26 @@ export async function POST(request, { params }) {
             );
         }
 
-        const presupuesto = await Presupuesto.findOne().sort({ createdAt: -1 });
+        const { searchParams } = new URL(request.url);
+        const presupuestoId = searchParams.get("presupuestoId");
+
+        if (!presupuestoId) {
+            return Response.json(
+                {
+                    ok: false,
+                    mensaje: "El presupuestoId es obligatorio",
+                },
+                { status: 400 }
+            );
+        }
+
+        const presupuesto = await Presupuesto.findById(presupuestoId);
 
         if (!presupuesto) {
             return Response.json(
                 {
                     ok: false,
-                    mensaje: "No hay presupuesto registrado todavía",
+                    mensaje: "Presupuesto no encontrado",
                 },
                 { status: 404 }
             );

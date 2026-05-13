@@ -3,6 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { jsPDF } from "jspdf";
 import { autoTable } from "jspdf-autotable";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
 
 const categoriasBaseUI = [
   {
@@ -73,6 +82,7 @@ export default function Home() {
   const [guardando, setGuardando] = useState(false);
   const categoriaFormRef = useRef(null);
   const subcategoriaFormRef = useRef(null);
+  const [dashboardVisible, setDashboardVisible] = useState(false);
 
   const [mensaje, setMensaje] = useState({
     tipo: "",
@@ -99,6 +109,57 @@ export default function Home() {
 
   const categorias = presupuesto?.categorias || [];
 
+  const datosGraficoCategorias = useMemo(() => {
+    return categorias
+      .filter((categoria) => Number(categoria.valorGastado || 0) > 0)
+      .map((categoria) => ({
+        nombre:
+          categoria.nombre.length > 14
+            ? `${categoria.nombre.substring(0, 14)}...`
+            : categoria.nombre,
+        nombreCompleto: categoria.nombre,
+        valorGastado: Number(categoria.valorGastado || 0),
+        porcentajeDelTotal: Number(categoria.porcentajeDelTotal || 0),
+      }))
+      .sort((a, b) => b.valorGastado - a.valorGastado);
+  }, [categorias]);
+
+  const categoriasMayorGasto = useMemo(() => {
+    return [...datosGraficoCategorias].slice(0, 3);
+  }, [datosGraficoCategorias]);
+
+  const estadoFinanciero = useMemo(() => {
+    const porcentaje = Number(presupuesto?.porcentajeGastado || 0);
+
+    if (porcentaje < 60) {
+      return {
+        titulo: "Bajo control",
+        descripcion:
+          "El presupuesto se mantiene en un nivel saludable de gasto.",
+        clase:
+          "border-emerald-400/30 bg-emerald-500/10 text-emerald-200",
+      };
+    }
+
+    if (porcentaje < 85) {
+      return {
+        titulo: "Cuidado",
+        descripcion:
+          "Ya se ha usado una parte considerable del presupuesto disponible.",
+        clase:
+          "border-amber-400/30 bg-amber-500/10 text-amber-200",
+      };
+    }
+
+    return {
+      titulo: "Presupuesto crítico",
+      descripcion:
+        "El gasto está cerca de consumir la mayor parte del presupuesto.",
+      clase:
+        "border-red-400/30 bg-red-500/10 text-red-200",
+    };
+  }, [presupuesto]);
+
   const saldoDisponible = useMemo(() => {
     if (!presupuesto) return 0;
     return Number(presupuesto.presupuestoTotal || 0) - Number(presupuesto.totalGastado || 0);
@@ -109,7 +170,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (presupuesto?.categorias?.length > 0 && !subcategoriaForm.categoriaId) {
+    if (!presupuesto?.categorias?.length) {
+      setSubcategoriaForm((prev) => ({
+        ...prev,
+        categoriaId: "",
+      }));
+      return;
+    }
+
+    const categoriaExisteEnPresupuesto = presupuesto.categorias.some(
+      (categoria) => categoria._id === subcategoriaForm.categoriaId
+    );
+
+    if (!categoriaExisteEnPresupuesto) {
       setSubcategoriaForm((prev) => ({
         ...prev,
         categoriaId: presupuesto.categorias[0]._id,
@@ -119,6 +192,17 @@ export default function Home() {
 
   function mostrarMensaje(tipo, texto) {
     setMensaje({ tipo, texto });
+  }
+
+
+  function obtenerPresupuestoActualId() {
+    const id = presupuesto?._id || presupuestoSeleccionadoId;
+
+    if (!id) {
+      throw new Error("No hay un presupuesto seleccionado");
+    }
+
+    return id;
   }
 
   async function cargarListaPresupuestos() {
@@ -151,10 +235,20 @@ export default function Home() {
     });
   }
 
-  function limpiarSubcategoriaForm() {
+  function limpiarSubcategoriaForm(presupuestoBase = presupuesto, categoriaIdPreferida = "") {
+    const categoriasBase = presupuestoBase?.categorias || [];
+
+    const categoriaExiste = categoriasBase.some(
+      (categoria) => categoria._id === categoriaIdPreferida
+    );
+
+    const categoriaId = categoriaExiste
+      ? categoriaIdPreferida
+      : categoriasBase[0]?._id || "";
+
     setSubcategoriaForm({
       id: "",
-      categoriaId: categorias[0]?._id || "",
+      categoriaId,
       nombre: "",
       valorGastado: "",
     });
@@ -180,8 +274,24 @@ export default function Home() {
 
       setPresupuesto(data.data);
       setPresupuestoSeleccionadoId(data.data._id);
+
+      setCategoriaForm({
+        id: "",
+        nombre: "",
+        descripcion: "",
+      });
+
+      setSubcategoriaForm({
+        id: "",
+        categoriaId: data.data.categorias?.[0]?._id || "",
+        nombre: "",
+        valorGastado: "",
+      });
+
+      setCategoriaTipo("base");
       setXmlReporte("");
       setXmlVisible(false);
+      setDashboardVisible(false);
       setVista("app");
     } catch (error) {
       mostrarMensaje("error", error.message);
@@ -192,12 +302,10 @@ export default function Home() {
 
   async function cargarXML() {
     try {
-      if (!presupuestoSeleccionadoId) {
-        throw new Error("Primero debes abrir o crear un presupuesto");
-      }
+      const idPresupuestoActual = obtenerPresupuestoActualId();
 
       const response = await fetch(
-        `/api/reportes/xml?presupuestoId=${presupuestoSeleccionadoId}`,
+        `/api/reportes/xml?presupuestoId=${idPresupuestoActual}`,
         {
           cache: "no-store",
         }
@@ -238,13 +346,21 @@ export default function Home() {
 
       setPresupuesto(data.data);
       setPresupuestoSeleccionadoId(data.data._id);
+
+      setCategoriaForm({
+        id: "",
+        nombre: "",
+        descripcion: "",
+      });
+
+      limpiarSubcategoriaForm(data.data);
+
+      setCategoriaTipo("base");
       setVista("app");
       setXmlReporte("");
       setXmlVisible(false);
+      setDashboardVisible(false);
       mostrarMensaje("ok", "Presupuesto creado correctamente");
-      await cargarListaPresupuestos();
-      limpiarCategoriaForm();
-      limpiarSubcategoriaForm();
     } catch (error) {
       mostrarMensaje("error", error.message);
     } finally {
@@ -259,10 +375,12 @@ export default function Home() {
       setGuardando(true);
 
       const esEdicion = Boolean(categoriaForm.id);
+      const idPresupuestoActual = obtenerPresupuestoActualId();
+
       const response = await fetch(
         esEdicion
-          ? `/api/categorias/${categoriaForm.id}?presupuestoId=${presupuestoSeleccionadoId}`
-          : `/api/categorias?presupuestoId=${presupuestoSeleccionadoId}`,
+          ? `/api/categorias/${categoriaForm.id}?presupuestoId=${idPresupuestoActual}`
+          : `/api/categorias?presupuestoId=${idPresupuestoActual}`,
         {
           method: esEdicion ? "PUT" : "POST",
           headers: {
@@ -282,6 +400,7 @@ export default function Home() {
       }
 
       setPresupuesto(data.data);
+      setPresupuestoSeleccionadoId(data.data._id);
       mostrarMensaje(
         "ok",
         esEdicion
@@ -306,8 +425,10 @@ export default function Home() {
     try {
       setGuardando(true);
 
+      const idPresupuestoActual = obtenerPresupuestoActualId();
+
       const response = await fetch(
-        `/api/categorias/${categoriaId}?presupuestoId=${presupuestoSeleccionadoId}`,
+        `/api/categorias/${categoriaId}?presupuestoId=${idPresupuestoActual}`,
         {
           method: "DELETE",
         }
@@ -321,9 +442,10 @@ export default function Home() {
       }
 
       setPresupuesto(data.data);
+      setPresupuestoSeleccionadoId(data.data._id);
       mostrarMensaje("ok", "Categoría eliminada correctamente");
       limpiarCategoriaForm();
-      limpiarSubcategoriaForm();
+      limpiarSubcategoriaForm(data.data);
       setXmlReporte("");
       setXmlVisible(false);
     } catch (error) {
@@ -344,10 +466,11 @@ export default function Home() {
       }
 
       const esEdicion = Boolean(subcategoriaForm.id);
+      const idPresupuestoActual = obtenerPresupuestoActualId();
 
       const url = esEdicion
-        ? `/api/categorias/${subcategoriaForm.categoriaId}/subcategorias/${subcategoriaForm.id}?presupuestoId=${presupuestoSeleccionadoId}`
-        : `/api/categorias/${subcategoriaForm.categoriaId}/subcategorias?presupuestoId=${presupuestoSeleccionadoId}`;
+        ? `/api/categorias/${subcategoriaForm.categoriaId}/subcategorias/${subcategoriaForm.id}?presupuestoId=${idPresupuestoActual}`
+        : `/api/categorias/${subcategoriaForm.categoriaId}/subcategorias?presupuestoId=${idPresupuestoActual}`;
 
       const response = await fetch(url, {
         method: esEdicion ? "PUT" : "POST",
@@ -367,6 +490,7 @@ export default function Home() {
       }
 
       setPresupuesto(data.data);
+      setPresupuestoSeleccionadoId(data.data._id);
       mostrarMensaje(
         "ok",
         esEdicion
@@ -374,7 +498,7 @@ export default function Home() {
           : "Subcategoría creada correctamente"
       );
 
-      limpiarSubcategoriaForm();
+      limpiarSubcategoriaForm(data.data, subcategoriaForm.categoriaId);
       setXmlReporte("");
       setXmlVisible(false);
     } catch (error) {
@@ -391,8 +515,10 @@ export default function Home() {
     try {
       setGuardando(true);
 
+      const idPresupuestoActual = obtenerPresupuestoActualId();
+
       const response = await fetch(
-        `/api/categorias/${categoriaId}/subcategorias/${subcategoriaId}?presupuestoId=${presupuestoSeleccionadoId}`,
+        `/api/categorias/${categoriaId}/subcategorias/${subcategoriaId}?presupuestoId=${idPresupuestoActual}`,
         {
           method: "DELETE",
         }
@@ -405,8 +531,9 @@ export default function Home() {
       }
 
       setPresupuesto(data.data);
+      setPresupuestoSeleccionadoId(data.data._id);
       mostrarMensaje("ok", "Subcategoría eliminada correctamente");
-      limpiarSubcategoriaForm();
+      limpiarSubcategoriaForm(data.data, categoriaId);
       setXmlReporte("");
       setXmlVisible(false);
     } catch (error) {
@@ -446,6 +573,73 @@ export default function Home() {
     });
 
     moverASeccion(subcategoriaFormRef);
+  }
+
+  function agregarGraficoBarrasPDF(doc, datos, startY) {
+    if (!datos || datos.length === 0) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text("No hay gastos registrados para graficar.", 14, startY);
+      return startY + 10;
+    }
+
+    const maxValor = Math.max(...datos.map((item) => item.valorGastado));
+    const chartX = 18;
+    const chartY = startY + 8;
+    const chartWidth = 170;
+    const chartHeight = 70;
+
+    // Margen interno para que las barras no toquen ni se salgan del marco
+    const paddingX = 12;
+    const innerChartWidth = chartWidth - paddingX * 2;
+
+    const barGap = 8;
+    const barWidth = Math.max(
+      12,
+      (innerChartWidth - barGap * (datos.length - 1)) / datos.length
+    );
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Gráfico de gastos por categoría", 14, startY);
+
+    // Fondo del gráfico
+    doc.setDrawColor(220, 220, 220);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(chartX, chartY, chartWidth, chartHeight, 3, 3, "FD");
+
+    datos.forEach((item, index) => {
+      const valor = Number(item.valorGastado || 0);
+      const alturaBarra = maxValor > 0 ? (valor / maxValor) * 45 : 0;
+
+      const x = chartX + paddingX + index * (barWidth + barGap);
+      const y = chartY + chartHeight - 18 - alturaBarra;
+
+      // Barra
+      doc.setFillColor(34, 211, 238);
+      doc.roundedRect(x, y, barWidth, alturaBarra, 2, 2, "F");
+
+      // Valor encima
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(30, 41, 59);
+      doc.text(
+        formatearMoneda(valor).replace("COP", "").trim(),
+        x,
+        y - 3,
+        { maxWidth: barWidth }
+      );
+
+      // Nombre debajo
+      doc.setFontSize(7);
+      doc.text(item.nombre, x, chartY + chartHeight - 8, {
+        maxWidth: barWidth + 8,
+      });
+    });
+
+    doc.setTextColor(0, 0, 0);
+
+    return chartY + chartHeight + 12;
   }
 
   function descargarPDF() {
@@ -529,16 +723,22 @@ export default function Home() {
       }
     });
 
-    const inicioDetalle = doc.lastAutoTable?.finalY
+    const inicioGrafico = doc.lastAutoTable?.finalY
       ? doc.lastAutoTable.finalY + 12
       : 90;
 
+    const despuesGrafico = agregarGraficoBarrasPDF(
+      doc,
+      datosGraficoCategorias,
+      inicioGrafico
+    );
+
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
-    doc.text("Detalle por categorías y subcategorías", 14, inicioDetalle);
+    doc.text("Detalle por categorías y subcategorías", 14, despuesGrafico);
 
     autoTable(doc, {
-      startY: inicioDetalle + 5,
+      startY: despuesGrafico + 5,
       head: [["Tipo", "Nombre", "Valor gastado", "% del total"]],
       body:
         filasDetalle.length > 0
@@ -643,7 +843,7 @@ export default function Home() {
                 </button>
 
                 <button
-                  onClick={() => cargarPresupuesto(presupuestoSeleccionadoId)}
+                  onClick={() => cargarPresupuesto(presupuesto?._id || presupuestoSeleccionadoId)}
                   className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-400/20"
                 >
                   Actualizar datos
@@ -858,6 +1058,39 @@ export default function Home() {
                 valor={formatearPorcentaje(presupuesto.porcentajeGastado)}
                 color="amber"
               />
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.25em] text-cyan-300">
+                    Análisis visual
+                  </p>
+                  <h2 className="mt-1 text-xl font-bold text-white">
+                    Dashboard de gastos
+                  </h2>
+                  <p className="mt-2 text-sm text-white/60">
+                    Visualiza el comportamiento del presupuesto mediante gráficos y un estado financiero automático.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setDashboardVisible(!dashboardVisible)}
+                  className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-400/20"
+                >
+                  {dashboardVisible ? "Ocultar análisis" : "Ver análisis gráfico"}
+                </button>
+              </div>
+
+              {dashboardVisible && (
+                <DashboardFinanciero
+                  datosGraficoCategorias={datosGraficoCategorias}
+                  categoriasMayorGasto={categoriasMayorGasto}
+                  estadoFinanciero={estadoFinanciero}
+                  formatearMoneda={formatearMoneda}
+                  formatearPorcentaje={formatearPorcentaje}
+                />
+              )}
             </section>
 
             <section className="mt-8 grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -1320,6 +1553,148 @@ export default function Home() {
         )}
       </div>
     </main>
+  );
+}
+
+function DashboardFinanciero({
+  datosGraficoCategorias,
+  categoriasMayorGasto,
+  estadoFinanciero,
+  formatearMoneda,
+  formatearPorcentaje,
+}) {
+  return (
+    <div className="mt-6 grid gap-5 xl:grid-cols-[1.3fr_0.7fr]">
+      <div className="rounded-3xl border border-white/10 bg-black/30 p-5">
+        <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-white">
+              Gasto por categoría
+            </h3>
+            <p className="text-sm text-white/55">
+              Comparación visual de las categorías con gasto registrado.
+            </p>
+          </div>
+        </div>
+
+        {datosGraficoCategorias.length === 0 ? (
+          <div className="flex h-72 items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-center text-sm text-white/55">
+            Aún no hay gastos registrados para graficar.
+          </div>
+        ) : (
+          <div className="h-72 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={datosGraficoCategorias}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                <XAxis
+                  dataKey="nombre"
+                  tick={{ fill: "rgba(255,255,255,0.65)", fontSize: 12 }}
+                  axisLine={{ stroke: "rgba(255,255,255,0.15)" }}
+                  tickLine={false}
+                />
+                <YAxis
+                  tick={{ fill: "rgba(255,255,255,0.65)", fontSize: 12 }}
+                  axisLine={{ stroke: "rgba(255,255,255,0.15)" }}
+                  tickLine={false}
+                  tickFormatter={(value) =>
+                    Number(value) >= 1000000
+                      ? `${Number(value / 1000000).toFixed(1)}M`
+                      : `${Number(value / 1000).toFixed(0)}K`
+                  }
+                />
+                <Tooltip
+                  cursor={{ fill: "rgba(255,255,255,0.05)" }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) {
+                      return null;
+                    }
+
+                    const item = payload[0].payload;
+
+                    return (
+                      <div className="rounded-2xl border border-white/10 bg-neutral-950 p-3 text-sm shadow-xl">
+                        <p className="font-semibold text-white">
+                          {item.nombreCompleto}
+                        </p>
+                        <p className="mt-1 text-cyan-200">
+                          Gasto: {formatearMoneda(item.valorGastado)}
+                        </p>
+                        <p className="text-amber-200">
+                          Porcentaje:{" "}
+                          {formatearPorcentaje(item.porcentajeDelTotal)}
+                        </p>
+                      </div>
+                    );
+                  }}
+                />
+                <Bar
+                  dataKey="valorGastado"
+                  radius={[10, 10, 0, 0]}
+                  fill="#22d3ee"
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-5">
+        <div className={`rounded-3xl border p-5 ${estadoFinanciero.clase}`}>
+          <p className="text-sm uppercase tracking-[0.2em] opacity-75">
+            Estado financiero
+          </p>
+          <h3 className="mt-2 text-2xl font-bold">
+            {estadoFinanciero.titulo}
+          </h3>
+          <p className="mt-3 text-sm opacity-85">
+            {estadoFinanciero.descripcion}
+          </p>
+        </div>
+
+        <div className="rounded-3xl border border-white/10 bg-black/30 p-5">
+          <h3 className="text-lg font-bold text-white">
+            Categorías con mayor gasto
+          </h3>
+          <p className="mt-1 text-sm text-white/55">
+            Top 3 según el valor gastado.
+          </p>
+
+          <div className="mt-4 space-y-3">
+            {categoriasMayorGasto.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 p-4 text-sm text-white/55">
+                No hay gastos registrados todavía.
+              </div>
+            ) : (
+              categoriasMayorGasto.map((categoria, index) => (
+                <div
+                  key={categoria.nombreCompleto}
+                  className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-white/45">
+                        #{index + 1}
+                      </p>
+                      <h4 className="font-semibold text-white">
+                        {categoria.nombreCompleto}
+                      </h4>
+                    </div>
+
+                    <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-200">
+                      {formatearPorcentaje(categoria.porcentajeDelTotal)}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-sm font-semibold text-cyan-200">
+                    {formatearMoneda(categoria.valorGastado)}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
